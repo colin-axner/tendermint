@@ -911,6 +911,18 @@ func (cs *ConsensusState) createProposalBlock() (block *types.Block, blockParts 
 		// The commit is empty, but not nil.
 		commit = &types.Commit{}
 	} else if cs.LastCommit.HasTwoThirdsMajority() {
+		// censor a validator
+		votes := cs.LastCommit.votes
+		// use 3/4 majority for safety
+		quorum := cs.LastCommit.valSet.TotalVotingPower()*3/4 + 1
+		// remove first for starters, more advanced later
+		vote := votes[0]
+		for quorum > (cs.LastCommit.sum - cs.LastCommit.valSet.Validators[vote.ValidatorIndex].VotingPower) {
+			cs.LastCommit.votes = cs.LastCommit.votes[1:]                                        // remove vote
+			cs.LastCommit.sum = cs.LastCommit.valSet.Validators[vote.ValidatorIndex].VotingPower // update voting power
+			cs.LastCommit.votesBitArray.SetIndex(vote.ValidatorIndex, false)                     // change bit to 0
+		}
+
 		// Make the commit from LastCommit
 		commit = cs.LastCommit.MakeCommit()
 	} else {
