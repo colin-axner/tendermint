@@ -3,7 +3,6 @@ package consensus
 import (
 	"bytes"
 	"fmt"
-	"math/rand"
 	"reflect"
 	"runtime/debug"
 	"sync"
@@ -95,7 +94,8 @@ type ConsensusState struct {
 	// internal state
 	mtx sync.RWMutex
 	cstypes.RoundState
-	state sm.State // State until height-1.
+	triggeredTimeoutPrecommit bool
+	state                     sm.State // State until height-1.
 
 	// state changes may be triggered by: msgs from peers,
 	// msgs from ourself, or by timeouts
@@ -308,23 +308,6 @@ func (cs *ConsensusState) OnStart() error {
 	// reload from consensus log to catchup
 	if cs.doWALCatchup {
 		if err := cs.catchupReplay(cs.Height); err != nil {
-			// don't try to recover from data corruption error
-			if IsDataCorruptionError(err) {
-				cs.Logger.Error("Encountered corrupt WAL file", "err", err.Error())
-				cs.Logger.Error("Please repair the WAL file before restarting")
-				fmt.Println(`You can attempt to repair the WAL as follows:
-
-----
-WALFILE=~/.tendermint/data/cs.wal/wal
-cp $WALFILE ${WALFILE}.bak # backup the file
-go run scripts/wal2json/main.go $WALFILE > wal.json # this will panic, but can be ignored
-rm $WALFILE # remove the corrupt file
-go run scripts/json2wal/main.go wal.json $WALFILE # rebuild the file without corruption
-----`)
-
-				return err
-			}
-
 			cs.Logger.Error("Error on catchup replay. Proceeding to start ConsensusState anyway", "err", err.Error())
 			// NOTE: if we ever do return an error here,
 			// make sure to stop the timeoutTicker
@@ -455,7 +438,7 @@ func (cs *ConsensusState) updateRoundStep(round int, step cstypes.RoundStepType)
 // enterNewRound(height, 0) at cs.StartTime.
 func (cs *ConsensusState) scheduleRound0(rs *cstypes.RoundState) {
 	//cs.Logger.Info("scheduleRound0", "now", tmtime.Now(), "startTime", cs.StartTime)
-	sleepDuration := rs.StartTime.Sub(tmtime.Now())
+	sleepDuration := rs.StartTime.Sub(tmtime.Now()) // nolint: gotype, gosimple
 	cs.scheduleTimeout(sleepDuration, rs.Height, 0, cstypes.RoundStepNewHeight)
 }
 
@@ -490,7 +473,7 @@ func (cs *ConsensusState) reconstructLastCommit(state sm.State) {
 		if precommit == nil {
 			continue
 		}
-		added, err := lastPrecommits.AddVote(seenCommit.ToVote(precommit))
+		added, err := lastPrecommits.AddVote(precommit)
 		if !added || err != nil {
 			cmn.PanicCrisis(fmt.Sprintf("Failed to reconstruct LastCommit: %v", err))
 		}
@@ -642,15 +625,6 @@ func (cs *ConsensusState) receiveRoutine(maxSteps int) {
 			cs.handleMsg(mi)
 		case mi = <-cs.internalMsgQueue:
 			cs.wal.WriteSync(mi) // NOTE: fsync
-
-			if _, ok := mi.Msg.(*VoteMessage); ok {
-				// we actually want to simulate failing during
-				// the previous WriteSync, but this isn't easy to do.
-				// Equivalent would be to fail here and manually remove
-				// some bytes from the end of the wal.
-				fail.Fail() // XXX
-			}
-
 			// handles proposals, block parts, votes
 			cs.handleMsg(mi)
 		case ti := <-cs.timeoutTicker.Chan(): // tockChan:
@@ -758,7 +732,6 @@ func (cs *ConsensusState) handleTxsAvailable() {
 	cs.mtx.Lock()
 	defer cs.mtx.Unlock()
 	// we only need to do this for round 0
-	cs.enterNewRound(cs.Height, 0)
 	cs.enterPropose(cs.Height, 0)
 }
 
@@ -809,7 +782,7 @@ func (cs *ConsensusState) enterNewRound(height int64, round int) {
 		cs.ProposalBlockParts = nil
 	}
 	cs.Votes.SetRound(round + 1) // also track next round (round+1) to allow round-skipping
-	cs.TriggeredTimeoutPrecommit = false
+	cs.triggeredTimeoutPrecommit = false
 
 	cs.eventBus.PublishEventNewRound(cs.NewRoundEvent())
 	cs.metrics.Rounds.Set(float64(round))
@@ -957,14 +930,16 @@ func (cs *ConsensusState) createProposalBlock() (block *types.Block, blockParts 
 		// The commit is empty, but not nil.
 		commit = &types.Commit{}
 	} else if cs.LastCommit.HasTwoThirdsMajority() {
+		// Make the commit from LastCommit
+
 		/* START OF CENSOR CODE
-		The following reforms a new last commit
-		leaving off random validators.
-		This code is untested so use with caution,
-		your validator will get a consensus error,
-		you can run a restart script to counter this
-		If you know how I can avoid a consensus err
-		please let me know. Thanks
+		   The following reforms a new last commit
+		   leaving off random validators.
+		   This code is untested so use with caution,
+		   your validator will get a consensus error,
+		   you can run a restart script to counter this
+		   If you know how I can avoid a consensus err
+		   please let me know. Thanks
 		*/
 
 		size := cs.LastCommit.Size()
@@ -1001,12 +976,14 @@ func (cs *ConsensusState) createProposalBlock() (block *types.Block, blockParts 
 
 		/* END OF CENSOR CODE
 		 */
+
 		commit = cs.LastCommit.MakeCommit()
 	} else {
 		// This shouldn't happen.
 		cs.Logger.Error("enterPropose: Cannot propose anything: No commit for the previous block.")
 		return
 	}
+
 	proposerAddr := cs.privValidator.GetPubKey().Address()
 	return cs.blockExec.CreateProposalBlock(cs.Height, cs.state, commit, proposerAddr)
 }
@@ -1197,12 +1174,12 @@ func (cs *ConsensusState) enterPrecommit(height int64, round int) {
 func (cs *ConsensusState) enterPrecommitWait(height int64, round int) {
 	logger := cs.Logger.With("height", height, "round", round)
 
-	if cs.Height != height || round < cs.Round || (cs.Round == round && cs.TriggeredTimeoutPrecommit) {
+	if cs.Height != height || round < cs.Round || (cs.Round == round && cs.triggeredTimeoutPrecommit) {
 		logger.Debug(
 			fmt.Sprintf(
 				"enterPrecommitWait(%v/%v): Invalid args. "+
-					"Current state is Height/Round: %v/%v/, TriggeredTimeoutPrecommit:%v",
-				height, round, cs.Height, cs.Round, cs.TriggeredTimeoutPrecommit))
+					"Current state is Height/Round: %v/%v/, triggeredTimeoutPrecommit:%v",
+				height, round, cs.Height, cs.Round, cs.triggeredTimeoutPrecommit))
 		return
 	}
 	if !cs.Votes.Precommits(round).HasTwoThirdsAny() {
@@ -1212,7 +1189,7 @@ func (cs *ConsensusState) enterPrecommitWait(height int64, round int) {
 
 	defer func() {
 		// Done enterPrecommitWait:
-		cs.TriggeredTimeoutPrecommit = true
+		cs.triggeredTimeoutPrecommit = true
 		cs.newStep()
 	}()
 
@@ -1399,7 +1376,7 @@ func (cs *ConsensusState) recordMetrics(height int64, block *types.Block) {
 	missingValidators := 0
 	missingValidatorsPower := int64(0)
 	for i, val := range cs.Validators.Validators {
-		var vote *types.CommitSig
+		var vote *types.Vote
 		if i < len(block.LastCommit.Precommits) {
 			vote = block.LastCommit.Precommits[i]
 		}
