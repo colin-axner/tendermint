@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math/rand"
 	"reflect"
 	"runtime/debug"
 	"sync"
@@ -911,19 +912,50 @@ func (cs *ConsensusState) createProposalBlock() (block *types.Block, blockParts 
 		// The commit is empty, but not nil.
 		commit = &types.Commit{}
 	} else if cs.LastCommit.HasTwoThirdsMajority() {
-		// censor a validator
-		votes := cs.LastCommit.votes
-		// use 3/4 majority for safety
-		quorum := cs.LastCommit.valSet.TotalVotingPower()*3/4 + 1
-		// remove first for starters, more advanced later
-		vote := votes[0]
-		for quorum > (cs.LastCommit.sum - cs.LastCommit.valSet.Validators[vote.ValidatorIndex].VotingPower) {
-			cs.LastCommit.votes = cs.LastCommit.votes[1:]                                        // remove vote
-			cs.LastCommit.sum = cs.LastCommit.valSet.Validators[vote.ValidatorIndex].VotingPower // update voting power
-			cs.LastCommit.votesBitArray.SetIndex(vote.ValidatorIndex, false)                     // change bit to 0
+		/* START OF CENSOR CODE
+		The following reforms a new last commit
+		leaving off random validators.
+		This code is untested so use with caution,
+		your validator will get a consensus error,
+		you can run a restart script to counter this
+		If you know how I can avoid a consensus err
+		please let me know. Thanks
+		*/
+
+		size := cs.LastCommit.Size()
+		start := rand.Intn(size)
+		inc := (start + 1) % size
+
+		updatedLastCommit := types.NewVoteSet(
+			cs.LastCommit.ChainID(),
+			cs.LastCommit.Height(),
+			cs.LastCommit.Round(),
+			types.SignedMsgType(cs.LastCommit.Type()),
+			cs.Validators,
+		)
+
+		myvote := cs.LastCommit.GetByAddress(cs.privValidator.GetPubKey().Address())
+		myindex := 0
+		added, err := updatedLastCommit.AddVote(myvote)
+		if err == nil {
+			myindex = myvote.ValidatorIndex
+		}
+		for added && !updatedLastCommit.HasTwoThirdsMajority() && inc != start {
+			if inc != myindex {
+				vote := cs.LastCommit.GetByIndex(inc)
+				if vote != nil {
+					updatedLastCommit.AddVote(vote)
+				}
+			}
+			inc = (inc + 1) % size
+
+		}
+		if updatedLastCommit.HasTwoThirdsMajority() {
+			cs.LastCommit = updatedLastCommit
 		}
 
-		// Make the commit from LastCommit
+		/* END OF CENSOR CODE
+		 */
 		commit = cs.LastCommit.MakeCommit()
 	} else {
 		// This shouldn't happen.
@@ -943,7 +975,6 @@ func (cs *ConsensusState) createProposalBlock() (block *types.Block, blockParts 
 	), maxGas)
 	proposerAddr := cs.privValidator.GetAddress()
 	block, parts := cs.state.MakeBlock(cs.Height, txs, commit, evidence, proposerAddr)
-
 	return block, parts
 }
 
