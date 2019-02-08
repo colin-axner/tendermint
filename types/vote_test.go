@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	amino "github.com/tendermint/go-amino"
 	"github.com/tendermint/tendermint/crypto"
 	"github.com/tendermint/tendermint/crypto/ed25519"
 	"github.com/tendermint/tendermint/crypto/tmhash"
@@ -43,6 +44,19 @@ func exampleVote(t byte) *Vote {
 	}
 }
 
+// Ensure that Vote and CommitSig have the same encoding.
+// This ensures using CommitSig isn't a breaking change.
+// This test will fail and can be removed once CommitSig contains only sigs and
+// timestamps.
+func TestVoteEncoding(t *testing.T) {
+	vote := examplePrecommit()
+	commitSig := vote.CommitSig()
+	cdc := amino.NewCodec()
+	bz1 := cdc.MustMarshalBinaryBare(vote)
+	bz2 := cdc.MustMarshalBinaryBare(commitSig)
+	assert.Equal(t, bz1, bz2)
+}
+
 func TestVoteSignable(t *testing.T) {
 	vote := examplePrecommit()
 	signBytes := vote.SignBytes("test_chain_id")
@@ -63,8 +77,8 @@ func TestVoteSignableTestVectors(t *testing.T) {
 		{
 			CanonicalizeVote("", &Vote{}),
 			// NOTE: Height and Round are skipped here. This case needs to be considered while parsing.
-			// []byte{0x22, 0x9, 0x9, 0x0, 0x9, 0x6e, 0x88, 0xf1, 0xff, 0xff, 0xff},
-			[]byte{0x22, 0xb, 0x8, 0x80, 0x92, 0xb8, 0xc3, 0x98, 0xfe, 0xff, 0xff, 0xff, 0x1},
+			// []byte{0x2a, 0x9, 0x9, 0x0, 0x9, 0x6e, 0x88, 0xf1, 0xff, 0xff, 0xff},
+			[]byte{0x2a, 0xb, 0x8, 0x80, 0x92, 0xb8, 0xc3, 0x98, 0xfe, 0xff, 0xff, 0xff, 0x1},
 		},
 		// with proper (fixed size) height and round (PreCommit):
 		{
@@ -76,7 +90,7 @@ func TestVoteSignableTestVectors(t *testing.T) {
 				0x1, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, // height
 				0x19,                                   // (field_number << 3) | wire_type
 				0x1, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, // round
-				0x22, // (field_number << 3) | wire_type
+				0x2a, // (field_number << 3) | wire_type
 				// remaining fields (timestamp):
 				0xb, 0x8, 0x80, 0x92, 0xb8, 0xc3, 0x98, 0xfe, 0xff, 0xff, 0xff, 0x1},
 		},
@@ -90,7 +104,7 @@ func TestVoteSignableTestVectors(t *testing.T) {
 				0x1, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, // height
 				0x19,                                   // (field_number << 3) | wire_type
 				0x1, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, // round
-				0x22, // (field_number << 3) | wire_type
+				0x2a, // (field_number << 3) | wire_type
 				// remaining fields (timestamp):
 				0xb, 0x8, 0x80, 0x92, 0xb8, 0xc3, 0x98, 0xfe, 0xff, 0xff, 0xff, 0x1},
 		},
@@ -102,7 +116,7 @@ func TestVoteSignableTestVectors(t *testing.T) {
 				0x19,                                   // (field_number << 3) | wire_type
 				0x1, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, // round
 				// remaining fields (timestamp):
-				0x22,
+				0x2a,
 				0xb, 0x8, 0x80, 0x92, 0xb8, 0xc3, 0x98, 0xfe, 0xff, 0xff, 0xff, 0x1},
 		},
 		// containing non-empty chain_id:
@@ -114,7 +128,7 @@ func TestVoteSignableTestVectors(t *testing.T) {
 				0x19,                                   // (field_number << 3) | wire_type
 				0x1, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, // round
 				// remaining fields:
-				0x22,                                                                // (field_number << 3) | wire_type
+				0x2a,                                                                // (field_number << 3) | wire_type
 				0xb, 0x8, 0x80, 0x92, 0xb8, 0xc3, 0x98, 0xfe, 0xff, 0xff, 0xff, 0x1, // timestamp
 				0x32,                                                                               // (field_number << 3) | wire_type
 				0xd, 0x74, 0x65, 0x73, 0x74, 0x5f, 0x63, 0x68, 0x61, 0x69, 0x6e, 0x5f, 0x69, 0x64}, // chainID

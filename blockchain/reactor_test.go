@@ -42,7 +42,7 @@ func randGenesisDoc(numValidators int, randPower bool, minPower int64) (*types.G
 }
 
 func makeVote(header *types.Header, blockID types.BlockID, valset *types.ValidatorSet, privVal types.PrivValidator) *types.Vote {
-	addr := privVal.GetAddress()
+	addr := privVal.GetPubKey().Address()
 	idx, _ := valset.GetByAddress(addr)
 	vote := &types.Vote{
 		ValidatorAddress: addr,
@@ -100,8 +100,8 @@ func newBlockchainReactor(logger log.Logger, genDoc *types.GenesisDoc, privVals 
 			lastBlockMeta := blockStore.LoadBlockMeta(blockHeight - 1)
 			lastBlock := blockStore.LoadBlock(blockHeight - 1)
 
-			vote := makeVote(&lastBlock.Header, lastBlockMeta.BlockID, state.Validators, privVals[0])
-			lastCommit = &types.Commit{Precommits: []*types.Vote{vote}, BlockID: lastBlockMeta.BlockID}
+			vote := makeVote(&lastBlock.Header, lastBlockMeta.BlockID, state.Validators, privVals[0]).CommitSig()
+			lastCommit = &types.Commit{Precommits: []*types.CommitSig{vote}, BlockID: lastBlockMeta.BlockID}
 		}
 
 		thisBlock := makeBlock(blockHeight, state, lastCommit)

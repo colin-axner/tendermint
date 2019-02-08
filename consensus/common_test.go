@@ -6,14 +6,18 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"path"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/go-kit/kit/log/term"
+
 	abcicli "github.com/tendermint/tendermint/abci/client"
+	"github.com/tendermint/tendermint/abci/example/counter"
+	"github.com/tendermint/tendermint/abci/example/kvstore"
 	abci "github.com/tendermint/tendermint/abci/types"
 	bc "github.com/tendermint/tendermint/blockchain"
 	cfg "github.com/tendermint/tendermint/config"
@@ -27,11 +31,6 @@ import (
 	sm "github.com/tendermint/tendermint/state"
 	"github.com/tendermint/tendermint/types"
 	tmtime "github.com/tendermint/tendermint/types/time"
-
-	"github.com/tendermint/tendermint/abci/example/counter"
-	"github.com/tendermint/tendermint/abci/example/kvstore"
-
-	"github.com/go-kit/kit/log/term"
 )
 
 const (
@@ -72,9 +71,10 @@ func NewValidatorStub(privValidator types.PrivValidator, valIndex int) *validato
 }
 
 func (vs *validatorStub) signVote(voteType types.SignedMsgType, hash []byte, header types.PartSetHeader) (*types.Vote, error) {
+	addr := vs.PrivValidator.GetPubKey().Address()
 	vote := &types.Vote{
 		ValidatorIndex:   vs.Index,
-		ValidatorAddress: vs.PrivValidator.GetAddress(),
+		ValidatorAddress: addr,
 		Height:           vs.Height,
 		Round:            vs.Round,
 		Timestamp:        tmtime.Now(),
@@ -151,8 +151,9 @@ func signAddVotes(to *ConsensusState, voteType types.SignedMsgType, hash []byte,
 
 func validatePrevote(t *testing.T, cs *ConsensusState, round int, privVal *validatorStub, blockHash []byte) {
 	prevotes := cs.Votes.Prevotes(round)
+	address := privVal.GetPubKey().Address()
 	var vote *types.Vote
-	if vote = prevotes.GetByAddress(privVal.GetAddress()); vote == nil {
+	if vote = prevotes.GetByAddress(address); vote == nil {
 		panic("Failed to find prevote from validator")
 	}
 	if blockHash == nil {
@@ -168,8 +169,9 @@ func validatePrevote(t *testing.T, cs *ConsensusState, round int, privVal *valid
 
 func validateLastPrecommit(t *testing.T, cs *ConsensusState, privVal *validatorStub, blockHash []byte) {
 	votes := cs.LastCommit
+	address := privVal.GetPubKey().Address()
 	var vote *types.Vote
-	if vote = votes.GetByAddress(privVal.GetAddress()); vote == nil {
+	if vote = votes.GetByAddress(address); vote == nil {
 		panic("Failed to find precommit from validator")
 	}
 	if !bytes.Equal(vote.BlockID.Hash, blockHash) {
@@ -179,8 +181,9 @@ func validateLastPrecommit(t *testing.T, cs *ConsensusState, privVal *validatorS
 
 func validatePrecommit(t *testing.T, cs *ConsensusState, thisRound, lockRound int, privVal *validatorStub, votedBlockHash, lockedBlockHash []byte) {
 	precommits := cs.Votes.Precommits(thisRound)
+	address := privVal.GetPubKey().Address()
 	var vote *types.Vote
-	if vote = precommits.GetByAddress(privVal.GetAddress()); vote == nil {
+	if vote = precommits.GetByAddress(address); vote == nil {
 		panic("Failed to find precommit from validator")
 	}
 
@@ -281,9 +284,10 @@ func newConsensusStateWithConfigAndBlockStore(thisConfig *cfg.Config, state sm.S
 }
 
 func loadPrivValidator(config *cfg.Config) *privval.FilePV {
-	privValidatorFile := config.PrivValidatorFile()
-	ensureDir(path.Dir(privValidatorFile), 0700)
-	privValidator := privval.LoadOrGenFilePV(privValidatorFile)
+	privValidatorKeyFile := config.PrivValidatorKeyFile()
+	ensureDir(filepath.Dir(privValidatorKeyFile), 0700)
+	privValidatorStateFile := config.PrivValidatorStateFile()
+	privValidator := privval.LoadOrGenFilePV(privValidatorKeyFile, privValidatorStateFile)
 	privValidator.Reset()
 	return privValidator
 }
@@ -371,36 +375,6 @@ func ensureNewEvent(
 			panic(fmt.Sprintf("expected round %v, got %v", round, rs.Round))
 		}
 		// TODO: We could check also for a step at this point!
-	}
-}
-
-func ensureNewRoundStep(stepCh <-chan interface{}, height int64, round int) {
-	ensureNewEvent(
-		stepCh,
-		height,
-		round,
-		ensureTimeout,
-		"Timeout expired while waiting for NewStep event")
-}
-
-func ensureNewVote(voteCh <-chan interface{}, height int64, round int) {
-	select {
-	case <-time.After(ensureTimeout):
-		break
-	case v := <-voteCh:
-		edv, ok := v.(types.EventDataVote)
-		if !ok {
-			panic(fmt.Sprintf("expected a *types.Vote, "+
-				"got %v. wrong subscription channel?",
-				reflect.TypeOf(v)))
-		}
-		vote := edv.Vote
-		if vote.Height != height {
-			panic(fmt.Sprintf("expected height %v, got %v", height, vote.Height))
-		}
-		if vote.Round != round {
-			panic(fmt.Sprintf("expected round %v, got %v", round, vote.Round))
-		}
 	}
 }
 
@@ -591,7 +565,7 @@ func randConsensusNet(nValidators int, testName string, tickerFunc func() Timeou
 		for _, opt := range configOpts {
 			opt(thisConfig)
 		}
-		ensureDir(path.Dir(thisConfig.Consensus.WalFile()), 0700) // dir for wal
+		ensureDir(filepath.Dir(thisConfig.Consensus.WalFile()), 0700) // dir for wal
 		app := appFunc()
 		vals := types.TM2PB.ValidatorUpdates(state.Validators)
 		app.InitChain(abci.RequestInitChain{Validators: vals})
@@ -612,16 +586,21 @@ func randConsensusNetWithPeers(nValidators, nPeers int, testName string, tickerF
 		stateDB := dbm.NewMemDB() // each state needs its own db
 		state, _ := sm.LoadStateFromDBOrGenesisDoc(stateDB, genDoc)
 		thisConfig := ResetConfig(fmt.Sprintf("%s_%d", testName, i))
-		ensureDir(path.Dir(thisConfig.Consensus.WalFile()), 0700) // dir for wal
+		ensureDir(filepath.Dir(thisConfig.Consensus.WalFile()), 0700) // dir for wal
 		var privVal types.PrivValidator
 		if i < nValidators {
 			privVal = privVals[i]
 		} else {
-			tempFile, err := ioutil.TempFile("", "priv_validator_")
+			tempKeyFile, err := ioutil.TempFile("", "priv_validator_key_")
 			if err != nil {
 				panic(err)
 			}
-			privVal = privval.GenFilePV(tempFile.Name())
+			tempStateFile, err := ioutil.TempFile("", "priv_validator_state_")
+			if err != nil {
+				panic(err)
+			}
+
+			privVal = privval.GenFilePV(tempKeyFile.Name(), tempStateFile.Name())
 		}
 
 		app := appFunc()

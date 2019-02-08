@@ -64,6 +64,13 @@
       "description": "Public service reporting and tracking"
     },
     {
+      "name": "ParadigmCore",
+      "url": "https://github.com/ParadigmFoundation/ParadigmCore",
+      "language": "TypeScript",
+      "author": "Paradigm Labs",
+      "description": "Reference implementation of the Paradigm Protocol, and OrderStream network client."
+    },
+    {
       "name": "Passchain",
       "url": "https://github.com/trusch/passchain",
       "language": "Go",
@@ -180,6 +187,14 @@
       "url": "https://github.com/dennismckinnon/spearmint",
       "language": "Javascript",
       "author": "Dennis McKinnon"
+    }
+  ],
+  "aminoLibraries": [
+    {
+      "name": "JS-Amino",
+      "url": "https://github.com/TanNgocDo/Js-Amino",
+      "language": "Javascript",
+      "author": "TanNgocDo"
     }
   ]
 }
