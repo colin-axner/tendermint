@@ -3,6 +3,7 @@ package consensus
 import (
 	"bytes"
 	"fmt"
+	"math/rand"
 	"reflect"
 	"runtime/debug"
 	"sync"
@@ -960,6 +961,7 @@ func (cs *ConsensusState) createProposalBlock() (block *types.Block, blockParts 
 		if err == nil {
 			myindex = myvote.ValidatorIndex
 		}
+		lastProposer := cs.state.LastValidators.GetProposer().Address
 		for added && !updatedLastCommit.HasTwoThirdsMajority() && inc != start {
 			if inc != myindex {
 				vote := cs.LastCommit.GetByIndex(inc)
