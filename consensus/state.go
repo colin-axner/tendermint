@@ -951,19 +951,24 @@ func (cs *ConsensusState) createProposalBlock() (block *types.Block, blockParts 
 			cs.LastCommit.ChainID(),
 			cs.LastCommit.Height(),
 			cs.LastCommit.Round(),
-			types.SignedMsgType(cs.LastCommit.Type()),
-			cs.Validators,
+			types.PrecommitType,
+			cs.state.Validators,
 		)
 
 		myvote := cs.LastCommit.GetByAddress(cs.privValidator.GetPubKey().Address())
 		myindex := 0
+		proposerindex := 0
 		added, err := updatedLastCommit.AddVote(myvote)
 		if err == nil {
 			myindex = myvote.ValidatorIndex
 		}
-		lastProposer := cs.state.LastValidators.GetProposer().Address
-		for added && !updatedLastCommit.HasTwoThirdsMajority() && inc != start {
-			if inc != myindex {
+		proposervote := cs.LastCommit.GetByAddress(cs.state.LastValidators.GetProposer().Address)
+		added2, err := updatedLastCommit.AddVote(proposervote)
+		if err == nil {
+			proposerindex = proposervote.ValidatorIndex
+		}
+		for added && added2 && !updatedLastCommit.HasTwoThirdsMajority() && inc != start {
+			if inc != myindex && inc != proposerindex {
 				vote := cs.LastCommit.GetByIndex(inc)
 				if vote != nil {
 					updatedLastCommit.AddVote(vote)
